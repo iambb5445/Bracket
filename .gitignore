@@ -3,3 +3,6 @@ __pycache__/
 # results
 *.csv
 *.log
+
+# API key
+auth.py

@@ -8,7 +8,7 @@ from utility import get_safe_filename
 from joblib import delayed, Parallel
 from tqdm import tqdm
 
-thread_count: int|None = None
+results_directory = "results"
 
 def get_submission_info(filename:str|None):
     info: dict[str, str|int|None] = {'student_id': None, 'late': None}
@@ -42,7 +42,7 @@ def analyze_criteria(chat, submission, criteria, log_id: int|None):
             raise Exception(f'Unknown grading method: {method}')
         results[name] = result
     if log_id is not None:
-        chat.dump(f"{output_filename}_{log_id}.log")
+        chat.dump(os.path.join(results_directory, f"{output_filename}_{log_id}.log"))
     return results
 
 if __name__=="__main__":
@@ -50,8 +50,16 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('submissions_dir', type=str, help="Directory containing submissions downloaded from Canvas")
     parser.add_argument('rubric_filename', type=str, help="The json file containing the rubric for the assignment")
+    parser.add_argument('thread_count', type=int, nargs='?', help="The number of threads used to run the grader. Recommended for faster calculation. Will use a single thread if not specified.")
+    parser.add_argument('results_dir', type=str, nargs='?', help="The directory that the results will be created in.")
     parser.add_argument('--test', action='store_true', help="Use this option to run only on the first 3 submission (used for testing purposes)")
+    parser.add_argument('--log_conversations', action='store_true', help="Use this option to log all the LLM conversations. Will create one log file per submission.")
     args = parser.parse_args()
+    thread_count = args.thread_count
+    log_conversations = args.log_conversations
+    if args.results_dir is not None:
+        results_directory = args.results_dir
+    os.mkdir(results_directory)
     # read submissions filenames
     submissions_dir = args.submissions_dir
     submissions = os.listdir(submissions_dir)
@@ -69,9 +77,9 @@ if __name__=="__main__":
     output_filename = get_safe_filename(f"{os.path.basename(rubric_filename)}_{chat.openAI_model}_{int(time.time())}")
     results = []
     if thread_count is None:
-        results = [analyze_criteria(chat.copy(), submissions[i], criteria, i) for i in tqdm(range(len(submissions)))]
+        results = [analyze_criteria(chat.copy(), submissions[i], criteria, i if log_conversations else None) for i in tqdm(range(len(submissions)))]
     else:
-        results = Parallel(n_jobs=thread_count)(delayed(analyze_criteria)(chat.copy(), submissions[i], criteria, i) for i in tqdm(range(len(submissions))))
+        results = Parallel(n_jobs=thread_count)(delayed(analyze_criteria)(chat.copy(), submissions[i], criteria, i if log_conversations else None) for i in tqdm(range(len(submissions))))
     # create pandas df
     columns = list(get_submission_info(None).keys()) + [c.get('name', 'unknown') for c in criteria]
     grades = dict([(c, []) for c in columns])
@@ -91,5 +99,5 @@ if __name__=="__main__":
     #   token count does not work with parallel runs
     #   since the state of the program is copied and not shared between threads
     print(f"Total token count: {OpenAIChat.TOTAL_TOKEN_COUNT}")
-    df.to_csv(f"grades_{output_filename}.csv")
+    df.to_csv(os.path.join(results_directory, f"grades_{output_filename}.csv"))
         
