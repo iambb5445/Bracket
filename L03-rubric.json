@@ -1,0 +1,34 @@
+{
+    "properties": {
+        "LLM": {
+            "system": "You are a grading assistant AI. You are reading a conversation between Brace and a student in html format. Brace is an LLM-based learning tool helping students with the assignments. Keep your answers short unless you need to. If there is nothing to say, you respond with ... and don't say another word about it."
+        }
+    },
+    "criteria": [
+        {
+            "name": "Invoke the fetch module",
+            "method": "match",
+            "value": "⟨canvas courses/76391/assignments/638687⟩"
+        },
+        {
+            "name": "First personal story",
+            "method": "LLM",
+            "prompt": "The students have to either come up with personalized stories or customize Brace's stories about softrware tools. The story should be personalized and should come from studen't responses, not Brace. Quote the student on one story. If you can't find it, you can just reply with ..."
+        },
+        {
+            "name": "Second personal story",
+            "method": "LLM",
+            "prompt": "Quote the student on another story. Again, the story should be personalized and should come from the student's responses, not Brace. The story should be about a differnt software development tool family than the previous one. If you can find anything, you can just reply with ..."
+        },
+        {
+            "name": "Student participation",
+            "method": "LLM",
+            "prompt": "Did the student have enough participation? Brace can help the student, but we want to make sure that the student is actually contributing to the final answer."
+        },
+        {
+            "name": "Anomalies",
+            "method": "LLM",
+            "prompt": "Was there any anomalies in the student's answers? Did something odd happen, did the conversation go elsewhere, or did you see something concerning that the instructor should know about? If nothing, just reply with ..."
+        }
+    ]
+}
