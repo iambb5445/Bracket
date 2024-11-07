@@ -3,7 +3,6 @@ import os
 import argparse
 from llm_connector import OpenAIChat, LLMConnector
 import pandas as pd
-import time
 from utility import get_safe_filename
 from joblib import delayed, Parallel
 from tqdm import tqdm
@@ -74,7 +73,7 @@ if __name__=="__main__":
     criteria = rubric.get("criteria", [])
     # find the criteria in submissions
     chat = OpenAIChat(OpenAIChat.OpenAIModel.GPT_4O_mini, llm_properties.get("system", None))
-    output_filename = get_safe_filename(f"{os.path.basename(rubric_filename)}_{chat.openAI_model}_{int(time.time())}")
+    output_filename = get_safe_filename(f"{os.path.basename(rubric_filename)}_{chat.openAI_model}", True)
     results = []
     if thread_count is None:
         results = [analyze_criteria(chat.copy(), submissions[i], criteria, i if log_conversations else None) for i in tqdm(range(len(submissions)))]

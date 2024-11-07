@@ -1,4 +1,7 @@
 from enum import StrEnum
+from tabulate import tabulate
+import time
+from bs4 import BeautifulSoup
 
 class TextUtil:
     class TEXT_COLOR(StrEnum):
@@ -30,6 +33,63 @@ class TextUtil:
             color = TextUtil.TEXT_COLOR._Reset
         print(color, end='')
 
-def get_safe_filename(filename: str):
+    @staticmethod
+    def pretty_print_list(headers: list, rows: list[list]):
+        for row in rows:
+            if len(row) != len(headers):
+                print("Warning: pretty printing the list has failed. Length of rows do not match the headers.")
+                print(rows)
+                return
+        print(tabulate(rows, headers, tablefmt="orgtbl"))
+    
+    @staticmethod
+    def truncate(text: str, max_size: int|None):
+        if max_size is None or len(text) < max_size:
+            return text
+        if max_size < 3:
+            return text[:max_size]
+        return text[:max_size - 3] + "..."
+        
+
+def get_safe_filename(filename: str, timed:bool=False, extension:str|None=None):
     keepcharacters = (' ','.','_', '-')
-    return "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
+    filename = "".join(c for c in filename if c.isalnum() or c in keepcharacters).rstrip()
+    if timed:
+        filename += f"_{int(time.time())}"
+    if extension is not None:
+        extension = "".join(c for c in extension if c.isalnum() or c in keepcharacters).rstrip()
+        filename += f".{extension}"
+    return filename
+
+def warn(warning_message: str):
+    print(TextUtil.get_colored_text(f"[WARNING]{warning_message}", TextUtil.TEXT_COLOR.Red))
+
+def html_to_text(value, raw:bool=False):
+    soup = BeautifulSoup(value, "html.parser")
+
+    if raw:
+        return soup.get_text()
+    
+    # Replace <li> with bullet points
+    for li_tag in soup.find_all("li"):
+        li_tag.insert_before("• ")
+        li_tag.unwrap() 
+    
+    # Replace <b> with bold simulation (use **bold** for example)
+    for b_tag in soup.find_all("b"):
+        b_tag.insert_before("**")
+        b_tag.insert_after("**")
+        b_tag.unwrap()
+    
+    # Replace <i> with italics simulation (use /italic/ for example)
+    for i_tag in soup.find_all("i"):
+        i_tag.insert_before("/")
+        i_tag.insert_after("/")
+        i_tag.unwrap()
+    
+    # Replace <br> with a newline character
+    for br_tag in soup.find_all("br"):
+        br_tag.insert_before("\n")
+        br_tag.unwrap()
+    
+    return soup.get_text()
