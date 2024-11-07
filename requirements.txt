@@ -1,6 +1,9 @@
-openai
+# required by multiple modules
 pandas
 joblib
+# canvas_connect_only
 requests
 tabulate
 bs4
+# grader only
+openai

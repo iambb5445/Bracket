@@ -340,7 +340,10 @@ class DownloadSubmissions(Command):
                 "grade": submission["grade"],
                 **value
             })
-        submission_data.sort(key=lambda row: row["sortable_name"])
+            # TODO don't use "zzzzzz"
+            if submission_data[-1]["sortable_name"] == "Student_Test":
+                submission_data[-1]["sortable_name"] = "zzzzzz"
+        submission_data.sort(key=lambda row: row.get("sortable_name", ""))
         for row in submission_data:
             for key, value in row.items():
                 if isinstance(value, str):
@@ -361,8 +364,8 @@ class GradeSubmissions(Command):
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):
         parser.add_argument("grade_filename", help="The file including grades for the student. The file should follow format similar to output of download_submissions.")
-        parser.add_argument('--grade_col', type=str, required=False, default="grade", help="The column associated with grade.")
-        parser.add_argument('--comment_col', type=str, required=False, default="grade", help="The column associated with grade.")
+        parser.add_argument('--grade_col', type=str, required=True, help="The column associated with grade.")
+        parser.add_argument('--comment_col', type=str, required=True, help="The column associated with comment.")
 
     @staticmethod
     def get_parse_info() -> dict:
@@ -379,17 +382,21 @@ class GradeSubmissions(Command):
         assert len(assignment_ids) == 1, "More than one or zero assignment_id found in the grading spreadsheet."
         assignment_id = list(assignment_ids)[0]
         for _, row in df.iterrows():
-            grade = row[args.grade_col]
             student_id = row["student_id"]
-            if pd.isna(student_id) or pd.isna(grade):
+            if pd.isna(student_id):
                 continue
             user_id = int(student_id)
+            grade = row.get(args.grade_col, None)
             comment = row.get(args.comment_col, None)
-            params = {"submission[posted_grade]": str(grade)}
-            if comment is not None:
+            params = {}
+            if grade is not None and not pd.isna(grade):
+                try:
+                    float(grade)
+                except ValueError:
+                    warn(f"Grade is not a valid float: {grade}, for student_id: {student_id} (skipped)")
+                params["submission[posted_grade]"] = str(grade)
+            if comment is not None and not pd.isna(comment):
                 params["comment[text_comment]"] = comment
-            if row["student_name"] != "Test Student":
-                continue
             if ask:
                 yes_no = None
             while yes_no not in ['y', 'n', 'yall', 'nall']:
