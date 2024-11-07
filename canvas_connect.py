@@ -1,7 +1,6 @@
 import requests
 import argparse
 from utility import TextUtil, warn, get_safe_filename, html_to_text
-from enum import StrEnum
 from auth import CANVAS_ACCESS_TOKEN
 import pandas as pd
 import os
@@ -272,6 +271,7 @@ class DownloadSubmissions(Command):
         parser.add_argument("course_id", help="The identifier of the course. Can be retrieved using list_courses.")
         parser.add_argument("assignment_id", help="The identifier of the assignment. Can be retrieved using list_assignments.")
         parser.add_argument('--max_count', type=int, required=False, default=MAX_FETCH, help='Maximum number of courses to fetch')
+        parser.add_argument('--output_dirname', type=str, required=False, default="submissions", help='Output directory for downloading submissions')
     @staticmethod
     def get_parse_info() -> dict:
         return {"name": "download_submissions", "help": "Download submissions for a given assignment"}
@@ -281,8 +281,11 @@ class DownloadSubmissions(Command):
         print(TextUtil.get_colored_text(course_info['name'], TextUtil.TEXT_COLOR.Green))
         assignment_info = get_assignment_info(args.course_id, args.assignment_id)
         print(TextUtil.get_colored_text(assignment_info['name'], TextUtil.TEXT_COLOR.Green))
+        if not os.path.exists(args.output_dirname):
+            os.makedirs(args.output_dirname)
         dirname = get_safe_filename(f"{course_info['name']}_{assignment_info['name']}", True)
-        filename = get_safe_filename(dirname, extension="csv")
+        csv_filename = os.path.join(args.output_dirname, get_safe_filename(dirname, extension="csv"))
+        download_dir = os.path.join(args.output_dirname, dirname)
         students = fetch_list(ENROLLMENTS_URL.to_url(course_id=args.course_id), MAX_FETCH)
         submissions = fetch_list(
             SUBMISSIONS_URL.to_url(course_id=args.course_id, assignment_id=args.assignment_id),
@@ -315,8 +318,8 @@ class DownloadSubmissions(Command):
                 for i, question in enumerate(questions):
                     value[question["question_name"]] = latest_attempt["submission_data"][i]["text"]
             elif submission_type == "online_upload":
-                if not os.path.exists(dirname):
-                    os.makedirs(dirname)
+                if not os.path.exists(download_dir):
+                    os.makedirs(download_dir)
                 attachments = latest_attempt["attachments"]
                 for i, attachment in enumerate(attachments):
                     url = attachment["url"]
@@ -348,11 +351,11 @@ class DownloadSubmissions(Command):
         df = pd.DataFrame(submission_data)
         col_order += [col for col in df.columns if col not in col_order]
         df = df[col_order]
-        df.to_csv(filename, index=False)
-        print(TextUtil.get_colored_text(f"Saved as {filename}", TextUtil.TEXT_COLOR.Red))
+        df.to_csv(csv_filename, index=False)
+        print(TextUtil.get_colored_text(f"Saved as {csv_filename}", TextUtil.TEXT_COLOR.Red))
         if len(downloads) > 0:
-            print(TextUtil.get_colored_text(f"Donwloading attachments at {dirname}", TextUtil.TEXT_COLOR.Blue))
-            Parallel(n_jobs=50)(delayed(GET_download)(URL(downloads[i]["url"]), os.path.join(dirname, downloads[i]["filename"]), True) for i in tqdm(range(len(downloads))))
+            print(TextUtil.get_colored_text(f"Donwloading attachments at {download_dir}", TextUtil.TEXT_COLOR.Blue))
+            Parallel(n_jobs=50)(delayed(GET_download)(URL(downloads[i]["url"]), os.path.join(download_dir, downloads[i]["filename"]), True) for i in tqdm(range(len(downloads))))
 
 class GradeSubmissions(Command):
     @staticmethod

@@ -4,5 +4,8 @@ __pycache__/
 *.csv
 *.log
 
+# submissions download
+submissions
+
 # API key
 auth.py
