@@ -1,6 +1,6 @@
 import requests
 import argparse
-from utility import TextUtil, warn, get_safe_filename, html_to_text
+from utility import TextUtil, PandasUtil, get_safe_filename, html_to_text, Confirm
 from auth import CANVAS_ACCESS_TOKEN
 import pandas as pd
 import os
@@ -149,14 +149,18 @@ def fetch_list(url: URL, max_size: int|None, options: dict = {}):
         items = items[:max_size]
     return items
 
-def get_course_info(course_id):
+def get_course_info(course_id:int, should_print:bool=False):
     _, course_info = GET_url(COURSE_URL.to_url(course_id=course_id))
     assert course_info is not None, f"Course {course_id} does not exist."
+    if should_print:
+        print(TextUtil.get_colored_text(course_info['name'], TextUtil.TEXT_COLOR.Green))
     return course_info
 
-def get_assignment_info(course_id, assignment_id):
+def get_assignment_info(course_id:int, assignment_id:int, should_print:bool=False):
     _, assignment_info = GET_url(ASSIGNMENT_URL.to_url(course_id=course_id, assignment_id=assignment_id))
     assert assignment_info is not None, f"Assignment {assignment_id} does not exist."
+    if should_print:
+        print(TextUtil.get_colored_text(assignment_info['name'], TextUtil.TEXT_COLOR.Green))
     return assignment_info
 
 class Command:
@@ -217,7 +221,7 @@ class ListFromCourse(ListCommand):
         parser.add_argument("course_id", help="The identifier of the course. Can be retrieved using list_courses.")
     @staticmethod
     def execute(args: argparse.Namespace):
-        print(TextUtil.get_colored_text(get_course_info(args.course_id)['name'], TextUtil.TEXT_COLOR.Green))
+        get_course_info(args.course_id, True)
         
 class ListStudents(ListFromCourse):
     @staticmethod
@@ -251,7 +255,7 @@ class ListFromAssignment(ListFromCourse):
     @staticmethod
     def execute(args: argparse.Namespace):
         super(ListFromAssignment, ListFromAssignment).execute(args)
-        print(TextUtil.get_colored_text(get_assignment_info(args.course_id, args.assignment_id)['name'], TextUtil.TEXT_COLOR.Green))
+        get_assignment_info(args.course_id, args.assignment_id, True)
 
 class ListSubmissions(ListFromAssignment):
     @staticmethod
@@ -276,16 +280,25 @@ class DownloadSubmissions(Command):
     def get_parse_info() -> dict:
         return {"name": "download_submissions", "help": "Download submissions for a given assignment"}
     @staticmethod
-    def execute(args: argparse.Namespace):
-        course_info = get_course_info(args.course_id)
-        print(TextUtil.get_colored_text(course_info['name'], TextUtil.TEXT_COLOR.Green))
-        assignment_info = get_assignment_info(args.course_id, args.assignment_id)
-        print(TextUtil.get_colored_text(assignment_info['name'], TextUtil.TEXT_COLOR.Green))
+    def _get_dirs(parent_dirname, course_info, assignment_info):
         if not os.path.exists(args.output_dirname):
             os.makedirs(args.output_dirname)
-        dirname = get_safe_filename(f"{course_info['name']}_{assignment_info['name']}", True)
-        csv_filename = os.path.join(args.output_dirname, get_safe_filename(dirname, extension="csv"))
-        download_dir = os.path.join(args.output_dirname, dirname)
+        name = get_safe_filename(f"{course_info['name']}_{assignment_info['name']}", True)
+        csv_filename = os.path.join(parent_dirname, get_safe_filename(name, extension="csv"))
+        download_dir = os.path.join(parent_dirname, name)
+        return csv_filename, download_dir
+    @staticmethod
+    def _get_quiz_questions(assignment_info):
+        questions=[]
+        if assignment_info.get("quiz_id", None) is not None:
+            _, questions = GET_url(QUIZ_QUESTIONS_URL.to_url(course_id=args.course_id, quiz_id=assignment_info["quiz_id"]))
+            assert questions is not None, f"Questions not found for quiz {assignment_info['quiz_id']}"
+        return questions
+    @staticmethod
+    def execute(args: argparse.Namespace):
+        course_info = get_course_info(args.course_id, True)
+        assignment_info = get_assignment_info(args.course_id, args.assignment_id, True)
+        csv_filename, download_dir = DownloadSubmissions._get_dirs(args.output_dirname, course_info, assignment_info)
         students = fetch_list(ENROLLMENTS_URL.to_url(course_id=args.course_id), MAX_FETCH)
         submissions = fetch_list(
             SUBMISSIONS_URL.to_url(course_id=args.course_id, assignment_id=args.assignment_id),
@@ -293,23 +306,22 @@ class DownloadSubmissions(Command):
             {"include[]": "submission_history"}
         )
         submission_data = []
-        questions=[]
         downloads=[]
-        if assignment_info.get("quiz_id", None) is not None:
-            _, questions = GET_url(QUIZ_QUESTIONS_URL.to_url(course_id=args.course_id, quiz_id=assignment_info["quiz_id"]))
-            assert questions is not None, f"Questions not found for quiz {assignment_info['quiz_id']}"
-            submission_data.append(dict([(question["question_name"],question["question_text"]) for question in questions]))
+        questions=DownloadSubmissions._get_quiz_questions(assignment_info)
+        submission_data.append(dict([(question["question_name"],question["question_text"]) for question in questions]))
         for submission in submissions:
-            history = submission["submission_history"]
-            attempts = len(history)
             student = next((s for s in students if s["user"]["id"] == submission["user_id"]), None)
             if student is None:
-                warn(f"Submission found for student {submission['user_id']}, who is not enrolled in this class. (skipped in results)")
+                TextUtil.warn(f"Submission found for student {submission['user_id']}, who is not enrolled in this class - skipped")
                 continue
+            history = submission["submission_history"]
             latest_attempt = history[-1]
             submission_type = latest_attempt["submission_type"]
             sortable_name = "_".join([part.strip() for part in student["user"]["sortable_name"].split(",")])
+            if sortable_name == "Test_Student":
+                sortable_name = "ZZZ_Test_Student" # TODO fix this. This is not a good way to handle this.
             value: dict[str, str] = {}
+            attempts = len(history)
             if submission_type is None: # for some reason, no submission is considered a history for submission
                 attempts = 0
             elif submission_type == "online_url":
@@ -318,8 +330,6 @@ class DownloadSubmissions(Command):
                 for i, question in enumerate(questions):
                     value[question["question_name"]] = latest_attempt["submission_data"][i]["text"]
             elif submission_type == "online_upload":
-                if not os.path.exists(download_dir):
-                    os.makedirs(download_dir)
                 attachments = latest_attempt["attachments"]
                 for i, attachment in enumerate(attachments):
                     url = attachment["url"]
@@ -327,7 +337,7 @@ class DownloadSubmissions(Command):
                     value[f"attachment[{i}]"] = attachment_filename
                     downloads.append({"filename": attachment_filename, "url": url})
             else:
-                warn(f"Unsupported submission type: {submission_type} for submission {submission['id']}")
+                TextUtil.warn(f"Unsupported submission type: {submission_type} for submission {submission['id']}")
             submission_data.append({
                 "course_id": args.course_id,
                 "assignment_id": args.assignment_id,
@@ -357,56 +367,40 @@ class DownloadSubmissions(Command):
         df.to_csv(csv_filename, index=False)
         print(TextUtil.get_colored_text(f"Saved as {csv_filename}", TextUtil.TEXT_COLOR.Red))
         if len(downloads) > 0:
+            if not os.path.exists(download_dir):
+                os.makedirs(download_dir)
             print(TextUtil.get_colored_text(f"Donwloading attachments at {download_dir}", TextUtil.TEXT_COLOR.Blue))
             Parallel(n_jobs=50)(delayed(GET_download)(URL(downloads[i]["url"]), os.path.join(download_dir, downloads[i]["filename"]), True) for i in tqdm(range(len(downloads))))
 
 class GradeSubmissions(Command):
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):
-        parser.add_argument("grade_filename", help="The file including grades for the student. The file should follow format similar to output of download_submissions.")
+        parser.add_argument("grade_filename", help="The file including grades for the student. The file should follow format similar to output of download_submissions. Specifically, each row should have course_id, assignment_id and student_id, or it will be skipped. student_name will be used for logging purposes if provided.")
         parser.add_argument('--grade_col', type=str, required=True, help="The column associated with grade.")
         parser.add_argument('--comment_col', type=str, required=True, help="The column associated with comment.")
-
     @staticmethod
     def get_parse_info() -> dict:
-        return {"name": "grade_submissions", "help": "Download submissions for a given assignment"}
+        return {"name": "grade_submissions", "help": "Upload submission grades for a given assignment"}
     @staticmethod
     def execute(args: argparse.Namespace):
-        ask = True
-        yes_no = None
+        conf = Confirm()
         df = pd.read_csv(args.grade_filename)
-        course_ids = set([int(row["course_id"]) for _, row in df.iterrows() if pd.notna(row["course_id"])])
-        assert len(course_ids) == 1, "More than one or zero course_id found in the grading spreadsheet."
-        course_id = list(course_ids)[0]
-        assignment_ids = set([int(row["assignment_id"]) for _, row in df.iterrows() if pd.notna(row["assignment_id"])])
-        assert len(assignment_ids) == 1, "More than one or zero assignment_id found in the grading spreadsheet."
-        assignment_id = list(assignment_ids)[0]
+        course_id = PandasUtil.get_if_all_same(df, "course_id")
+        assignment_id = PandasUtil.get_if_all_same(df, "assignment_id")
         for _, row in df.iterrows():
-            student_id = row["student_id"]
-            if pd.isna(student_id):
+            student_id, student_name, student_email, grade, comment = PandasUtil.multi_get(row,
+                "student_id", "student_name", "student_email", args.grade_col, args.comment_col)
+            if student_id is None or not TextUtil.is_type(student_id, int, f"Not a valid integer for student_id: {student_id} - skipped"):
                 continue
-            user_id = int(student_id)
-            grade = row.get(args.grade_col, None)
-            comment = row.get(args.comment_col, None)
+            student_id = int(student_id)
             params = {}
-            if grade is not None and not pd.isna(grade):
-                try:
-                    float(grade)
-                except ValueError:
-                    warn(f"Grade is not a valid float: {grade}, for student_id: {student_id} (skipped)")
-                params["submission[posted_grade]"] = str(grade)
-            if comment is not None and not pd.isna(comment):
+            if grade is not None and TextUtil.is_type(grade, float, f"Grade is not a valid float: {grade}, for student_id: {student_id} - skipped"):
+                    params["submission[posted_grade]"] = str(grade)
+            if comment is not None:
                 params["comment[text_comment]"] = comment
-            if ask:
-                yes_no = None
-            while yes_no not in ['y', 'n', 'yall', 'nall']:
-                yes_no = input(f"[y/n/yall/nall] setting grade for {row['student_name']}({row['student_email']}) to {grade} and putting comment: {comment}")
-            if yes_no in ['nall', 'yall']:
-                ask=False
-            if yes_no in ['n', 'nall']:
-                continue
-            PUT_url(USER_SUBMISSION_URL.to_url(course_id=course_id, assignment_id=assignment_id, user_id=user_id),
-                    params=params)
+            if len(params) > 0 and conf.ask(f"Applying grade for {student_name}({student_email}) to {grade} and putting comment: {comment}"):
+                PUT_url(USER_SUBMISSION_URL.to_url(course_id=course_id, assignment_id=assignment_id,
+                                                   user_id=student_id), params=params)
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(description="Main Command Line Interface")
