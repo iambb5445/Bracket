@@ -1,6 +1,9 @@
 from tabulate import tabulate
 import time
 from bs4 import BeautifulSoup
+from bs4 import MarkupResemblesLocatorWarning
+import warnings
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 from enum import StrEnum
 import pandas as pd
 
@@ -82,6 +85,13 @@ class PandasUtil:
     @staticmethod
     def multi_get(row: pd.Series, *col_names: str, default=None):
         return [PandasUtil.get(row, name, default) for name in col_names]
+    @staticmethod
+    def ask_col_name(df: pd.DataFrame, message: str):
+        while True:
+            col_name = input(message)
+            if col_name in df.columns:
+                return col_name
+            print(TextUtil.get_colored_text(f"Column {col_name} not found. Try again.", TextUtil.TEXT_COLOR.Red))
 
 def get_safe_filename(filename: str, timed:bool=False, extension:str|None=None):
     keepcharacters = (' ','.','_', '-')
@@ -131,14 +141,14 @@ class Confirm:
         NALL = "nall"
     def __init__(self):
         self.auto_response: bool|None = None
-    def ask(self, message: str, display_options:bool=True):
-        all_options = [e.value for e in Confirm.Response]
+    def ask(self, message: str, display_options:bool=True, no_all:bool=True):
+        valid_options = [Confirm.Response.Y, Confirm.Response.N] if no_all else [e.value for e in Confirm.Response]
         if self.auto_response is not None:
             return self.auto_response
         if display_options:
-            message = f"[{'/'.join(all_options)}]" + message
+            message = f"[{'/'.join(valid_options)}]" + message
         response = None
-        while response not in all_options:
+        while response not in valid_options:
             response = input(message).lower()
         if response in [Confirm.Response.Y, Confirm.Response.YALL]:
             ret = True

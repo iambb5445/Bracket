@@ -22,13 +22,13 @@ class URL:
     def parametrize(self, parameter_name:str, custom_syntax:str|None=None):
         return ParametrizedURL(self).parametrize(parameter_name, custom_syntax)
     
-    def add_options(self, options):
+    def add_options(self, *options: tuple[str, str]): # options is not dict since it can have multiple values for same key, e.g. include
         url = self.value
         if '?' in url:
             url += '&'
         elif len(options) > 0:
             url += '?'
-        url += '&'.join(f"{k}={v}" for k, v in options.items())
+        url += '&'.join(f"{k}={v}" for k, v in options)
         return URL(url)
     
     def __repr__(self) -> str:
@@ -76,12 +76,12 @@ QUIZZES_URL = COURSE_URL.add("quizzes")
 QUIZ_URL = QUIZZES_URL.parametrize("quiz_id")
 QUIZ_QUESTIONS_URL = QUIZ_URL.add("questions")
 
-def GET_url(url: URL, options: dict = {}, quiet:bool=False):
+def GET_url(url: URL, *options: tuple[str, str], quiet:bool=False):
     headers = {
         'Authorization': f'Bearer {CANVAS_ACCESS_TOKEN}',
         'Content-Type': 'application/json'
     }
-    url = url.add_options(options)
+    url = url.add_options(*options)
     if not quiet:
         print(TextUtil.get_colored_text(f"GET {url}", TextUtil.TEXT_COLOR.Yellow))
     response = requests.get(repr(url), headers=headers)
@@ -132,11 +132,13 @@ def PUT_url(url: URL, params: dict[str, str] = {}, quiet:bool=False):
         print(f"Error: {response.status_code} for PUT {repr(url)}")
         return response.headers, None
         
-def fetch_list(url: URL, max_size: int|None, options: dict = {}):
+def fetch_list(url: URL, max_size: int|None, *options: tuple[str, str]):
     items = []
+    if max_size is not None and not any([k == "per_page" for k, _ in options]):
+        options = (*options, ("per_page", str(max_size)))
     while max_size is None or len(items) < max_size:
         # attempt to fetch all at once, otherwise it will fetch 10 at a time by default which is slower
-        headers, this_items = GET_url(url, options | ({"per_page": max_size} if max_size is not None else {}))
+        headers, this_items = GET_url(url, *options)
         if this_items is None:
             break
         items += this_items
@@ -145,6 +147,7 @@ def fetch_list(url: URL, max_size: int|None, options: dict = {}):
         if 'next' not in links or ('last' in links and links['current'] == links['last']):
             break
         url = URL(links['next'])
+        options = () # the next link is comming from next, and it should already include all the required options. We should not manually change it.
     if max_size is not None:
         items = items[:max_size]
     return items
@@ -265,7 +268,7 @@ class ListSubmissions(ListFromAssignment):
     def execute(args: argparse.Namespace):
         super(ListSubmissions, ListSubmissions).execute(args)
         super(ListSubmissions, ListSubmissions).print_list(args, SUBMISSIONS_URL.to_url(course_id=args.course_id, assignment_id=args.assignment_id),
-                ["id", "name", "workflow_state", "due_at", "lock_at"],
+                ["id", "user_id", "workflow_state", "grade", "attempt"],
                 [None, 25, 15, 15, 15]
                 )
         
@@ -276,6 +279,7 @@ class DownloadSubmissions(Command):
         parser.add_argument("assignment_id", help="The identifier of the assignment. Can be retrieved using list_assignments.")
         parser.add_argument('--max_count', type=int, required=False, default=MAX_FETCH, help='Maximum number of courses to fetch')
         parser.add_argument('--output_dirname', type=str, required=False, default="submissions", help='Output directory for downloading submissions')
+        parser.add_argument('--all_attempts', action='store_true', help="Include all attempts (not just latest) for each submission. All comments are included whether or not this option is chosen.")
     @staticmethod
     def get_parse_info() -> dict:
         return {"name": "download_submissions", "help": "Download submissions for a given assignment"}
@@ -295,88 +299,133 @@ class DownloadSubmissions(Command):
             assert questions is not None, f"Questions not found for quiz {assignment_info['quiz_id']}"
         return questions
     @staticmethod
-    def execute(args: argparse.Namespace):
-        course_info = get_course_info(args.course_id, True)
-        assignment_info = get_assignment_info(args.course_id, args.assignment_id, True)
-        csv_filename, download_dir = DownloadSubmissions._get_dirs(args.output_dirname, course_info, assignment_info)
-        students = fetch_list(ENROLLMENTS_URL.to_url(course_id=args.course_id), MAX_FETCH)
-        submissions = fetch_list(
-            SUBMISSIONS_URL.to_url(course_id=args.course_id, assignment_id=args.assignment_id),
-            args.max_count,
-            {"include[]": "submission_history"}
-        )
-        submission_data = []
-        downloads=[]
-        questions=DownloadSubmissions._get_quiz_questions(assignment_info)
-        submission_data.append(dict([(question["question_name"],question["question_text"]) for question in questions]))
-        for submission in submissions:
-            student = next((s for s in students if s["user"]["id"] == submission["user_id"]), None)
-            if student is None:
-                TextUtil.warn(f"Submission found for student {submission['user_id']}, who is not enrolled in this class - skipped")
-                continue
-            history = submission["submission_history"]
-            latest_attempt = history[-1]
-            submission_type = latest_attempt["submission_type"]
-            sortable_name = "_".join([part.strip() for part in student["user"]["sortable_name"].split(",")])
-            if sortable_name == "Test_Student":
-                sortable_name = "ZZZ_Test_Student" # TODO fix this. This is not a good way to handle this.
-            value: dict[str, str] = {}
-            attempts = len(history)
-            if submission_type is None: # for some reason, no submission is considered a history for submission
-                attempts = 0
-            elif submission_type == "online_url":
-                value = {"submission": latest_attempt["url"]}
-            elif submission_type == "online_quiz":
-                for i, question in enumerate(questions):
-                    value[question["question_name"]] = latest_attempt["submission_data"][i]["text"]
-            elif submission_type == "online_upload":
-                attachments = latest_attempt["attachments"]
-                for i, attachment in enumerate(attachments):
-                    url = attachment["url"]
-                    attachment_filename = get_safe_filename(f"{sortable_name}_{i}")
-                    value[f"attachment[{i}]"] = attachment_filename
-                    downloads.append({"filename": attachment_filename, "url": url})
-            else:
-                TextUtil.warn(f"Unsupported submission type: {submission_type} for submission {submission['id']}")
-            submission_data.append({
-                "course_id": args.course_id,
-                "assignment_id": args.assignment_id,
-                "submission_id": submission["id"],
-                "student_id": submission["user_id"],
-                "student_name": student["user"]["name"],
-                "sortable_name": sortable_name,
-                "student_email": student["user"]["login_id"],
-                "attempts": attempts,
-                "grade": submission["grade"],
-                **value
-            })
-            # TODO don't use "zzzzzz"
-            if submission_data[-1]["sortable_name"] == "Student_Test":
-                submission_data[-1]["sortable_name"] = "zzzzzz"
+    def _get_sortable_name(student):
+        sortable_name = "_".join([part.strip() for part in student["user"]["sortable_name"].split(",")])
+        if sortable_name == "Student_Test":
+            # possible: ΩΩΩ_Test_Student (but I have to fix safe_filename, not that test student gonna have any submission though)
+            # possible: ~Test_Student show latest in the spreadsheet, but earliest in files download (not that test student gonna have any submission though))
+            sortable_name = "zzz_Student_Test" # TODO fix this. This is not a good way to handle this.
+        return sortable_name
+    @staticmethod
+    def _get_attempt_info(attempt, student, questions, submission):
+        downloads = []
+        submission_type = attempt["submission_type"]
+        sortable_name = DownloadSubmissions._get_sortable_name(student)
+        attempt_info: dict[str, str] = {}
+        if submission_type is None: # for some reason, no submission is considered a history for submission
+            return {"Empty": True}, [] # kept for comments
+        if submission_type == "online_url":
+            attempt_info = {"submission": attempt["url"]}
+        elif submission_type == "online_quiz":
+            for i, question in enumerate(questions):
+                attempt_info[question["question_name"]] = attempt["submission_data"][i]["text"]
+        elif submission_type == "online_upload":
+            attachments = attempt["attachments"]
+            for i, attachment in enumerate(attachments):
+                url = attachment["url"]
+                attachment_filename = get_safe_filename(f"{sortable_name}_{i}")
+                attempt_info[f"attachment[{i}]"] = attachment_filename
+                downloads.append({"filename": attachment_filename, "url": url})
+        else:
+            TextUtil.warn(f"Unsupported submission type: {submission_type} for submission {submission['id']}")
+        return attempt_info, downloads
+    @staticmethod
+    def _write_to_file(submission_data, csv_filename):
         submission_data.sort(key=lambda row: row.get("sortable_name", ""))
         for row in submission_data:
             for key, value in row.items():
                 if isinstance(value, str):
                     row[key] = html_to_text(value)
-        col_order = [
+        col_order = [ # TODO enum these? shouldn't repeat
             "course_id", "assignment_id", "submission_id", "student_id", "student_name", "student_email",
-            "sortable_name", "attempts"]
+            "sortable_name", "attempt_number"]
         df = pd.DataFrame(submission_data)
         col_order += [col for col in df.columns if col not in col_order]
         df = df[col_order]
         df.to_csv(csv_filename, index=False)
         print(TextUtil.get_colored_text(f"Saved as {csv_filename}", TextUtil.TEXT_COLOR.Red))
+    @staticmethod
+    def _download_attachments(downloads, download_dir):
         if len(downloads) > 0:
             if not os.path.exists(download_dir):
                 os.makedirs(download_dir)
             print(TextUtil.get_colored_text(f"Donwloading attachments at {download_dir}", TextUtil.TEXT_COLOR.Blue))
             Parallel(n_jobs=50)(delayed(GET_download)(URL(downloads[i]["url"]), os.path.join(download_dir, downloads[i]["filename"]), True) for i in tqdm(range(len(downloads))))
+    @staticmethod
+    def _summarize_rubric(rubric) -> str:
+        ratings_summary = '\n'.join(
+            f'[{rating["points"]}] ' +\
+            f'{rating["description"]}' +\
+            (f'({rating["long_description"]})' if len(rating["long_description"]) > 0 else '')
+            for rating in rubric["ratings"])
+        return f'[{rubric["points"]}] point(s)\n' +\
+               f'desc: {rubric["description"]}\n'+\
+               (f'long desc: {rubric["long_description"]}\n' if len(rubric["long_description"]) > 0 else '') +\
+               ratings_summary
+    @staticmethod
+    def execute(args: argparse.Namespace):
+        course_info = get_course_info(args.course_id, True)
+        assignment_info = get_assignment_info(args.course_id, args.assignment_id, True)
+        questions=DownloadSubmissions._get_quiz_questions(assignment_info)
+        csv_filename, download_dir = DownloadSubmissions._get_dirs(args.output_dirname, course_info, assignment_info)
+        students = fetch_list(ENROLLMENTS_URL.to_url(course_id=args.course_id), MAX_FETCH)
+        submissions = fetch_list(
+            SUBMISSIONS_URL.to_url(course_id=args.course_id, assignment_id=args.assignment_id),
+            args.max_count,
+            ("include[]", "submission_history"),
+            ("include[]", "submission_comments"),
+            ("include[]", "rubric_assessment"),
+        )
+        submission_data = []
+        downloads=[]
+        submission_data.append(dict([("student_name", "Reference/MaxGrades")] +
+                                    [("grade", assignment_info["points_possible"])] +
+                                    [("new_grade", assignment_info["points_possible"])] +
+                                    [("new_comment", "Placeholder for new comment")] +
+                                    [(f'rubric[{i}]:{rubric["id"]}g', f'{rubric["points"]}') for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
+                                    [(f'rubric[{i}]:{rubric["id"]}c', DownloadSubmissions._summarize_rubric(rubric)) for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
+                                    [(f'new_rubric[{i}]:g', f'{rubric["points"]}') for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
+                                    [(f'new_rubric[{i}]:c', DownloadSubmissions._summarize_rubric(rubric)) for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
+                                    [(question["question_name"],question["question_text"]) for question in questions]
+                                ))
+        for submission in submissions:
+            student = next((s for s in students if s["user"]["id"] == submission["user_id"]), None)
+            if student is None:
+                TextUtil.warn(f"Submission found for student {submission['user_id']}, who is not enrolled in this class - skipped")
+                continue
+            sortable_name = DownloadSubmissions._get_sortable_name(student)
+            history = submission["submission_history"]
+            history = history[-1:] if not args.all_attempts else history
+            for attempt_index, attempt in enumerate(history):
+                comments = dict([(f"comment[{index}]", f"attempt[{comment['attempt']}] {comment['author_name']}\n{comment['comment']}")
+                                 for index, comment in enumerate(submission["submission_comments"])
+                                 if comment["attempt"] == attempt_index or comment["attempt"] is None or not args.all_attempts])
+                rubric = dict([(f'rubric[{i}]:{id}g', f'{assessment.get("points", None)}') for i, (id, assessment) in enumerate((submission.get("rubric_assessment", None) or {}).items())] +
+                              [(f'rubric[{i}]:{id}c', f'{assessment.get("comments", None)}') for i, (id, assessment) in enumerate((submission.get("rubric_assessment", None) or {}).items())])
+                attempt_info, attachments = DownloadSubmissions._get_attempt_info(attempt, student, questions, submission)
+                downloads += attachments
+                submission_data.append({
+                    "course_id": args.course_id,
+                    "assignment_id": args.assignment_id,
+                    "submission_id": submission["id"],
+                    "student_id": student["user"]["id"],
+                    "student_name": student["user"]["name"],
+                    "student_email": student["user"]["login_id"],
+                    "sortable_name": sortable_name,
+                    "attempt_number": attempt_index+1,
+                    "grade": submission["grade"],
+                    **attempt_info,
+                    **comments,
+                    **rubric,
+                })
+        DownloadSubmissions._write_to_file(submission_data, csv_filename)
+        DownloadSubmissions._download_attachments(downloads, download_dir)
 
 class GradeSubmissions(Command):
     @staticmethod
     def add_args(parser: argparse.ArgumentParser):
         parser.add_argument("grade_filename", help="The file including grades for the student. The file should follow format similar to output of download_submissions. Specifically, each row should have course_id, assignment_id and student_id, or it will be skipped. student_name will be used for logging purposes if provided.")
-        parser.add_argument('--grade_col', type=str, required=True, help="The column associated with grade.")
+        parser.add_argument('--grade_col', type=str, required=True, help="The column associated with grade. Note that this value will be ignored if instead a rubric is used.")
         parser.add_argument('--comment_col', type=str, required=True, help="The column associated with comment.")
     @staticmethod
     def get_parse_info() -> dict:
@@ -387,6 +436,15 @@ class GradeSubmissions(Command):
         df = pd.read_csv(args.grade_filename)
         course_id = PandasUtil.get_if_all_same(df, "course_id")
         assignment_id = PandasUtil.get_if_all_same(df, "assignment_id")
+        assignment_info = get_assignment_info(course_id, assignment_id, True)
+        rubric_grade_col_names = {}
+        rubric_comment_col_names = {}
+        if assignment_info.get("use_rubric_for_grading", False):
+            if Confirm().ask("The grade for this assignment can be based on the rubric. Would you like to use rubric columns for grading?\n" +\
+                             TextUtil.get_colored_text(f"NOTE: THIS ACTION FORCES TO IGNORE THE PROVIDED GRADE_COL, \"{args.grade_col}\"", TextUtil.TEXT_COLOR.Red)):
+                for i, rubric in enumerate(assignment_info["rubric"] or []):
+                    rubric_grade_col_names[rubric["id"]] = PandasUtil.ask_col_name(df, f'rubric[{i}]:{rubric["id"]}\n{DownloadSubmissions._summarize_rubric(rubric)}\nWhich column refers to the ' + TextUtil.get_colored_text('GRADE', TextUtil.TEXT_COLOR.Yellow) + ' of this criterion?')
+                    rubric_comment_col_names[rubric["id"]] = PandasUtil.ask_col_name(df, f'rubric[{i}]:{rubric["id"]}\n{DownloadSubmissions._summarize_rubric(rubric)}\nWhich column refers to the ' + TextUtil.get_colored_text('COMMENT', TextUtil.TEXT_COLOR.Yellow) + 'on this criterion?')
         for _, row in df.iterrows():
             student_id, student_name, student_email, grade, comment = PandasUtil.multi_get(row,
                 "student_id", "student_name", "student_email", args.grade_col, args.comment_col)
@@ -394,11 +452,30 @@ class GradeSubmissions(Command):
                 continue
             student_id = int(student_id)
             params = {}
-            if grade is not None and TextUtil.is_type(grade, float, f"Grade is not a valid float: {grade}, for student_id: {student_id} - skipped"):
-                    params["submission[posted_grade]"] = str(grade)
+            grade_text:str = "<None>"
+            comment_text:str = "<None>"
             if comment is not None:
                 params["comment[text_comment]"] = comment
-            if len(params) > 0 and conf.ask(f"Applying grade for {student_name}({student_email}) to {grade} and putting comment: {comment}"):
+                comment_text = f"\"{comment}\""
+            if len(rubric_grade_col_names) > 0:
+                grade_text = "rubric"
+                comment_text += "_rubric"
+                for rubric in (assignment_info["rubric"] or []):
+                    rubric_id = rubric["id"]
+                    grade_col_name = rubric_grade_col_names[rubric_id]
+                    comment_col_name = rubric_comment_col_names[rubric_id]
+                    rubric_grade = PandasUtil.get(row, grade_col_name)
+                    rubric_comment = PandasUtil.get(row, comment_col_name)
+                    if rubric_grade is not None and TextUtil.is_type(rubric_grade, float, f"Rubric grade for {grade_col_name} is not a valid float: {rubric_grade}, for student_id: {student_id} - skipped"):
+                        params[f"rubric_assessment[{rubric_id}][points]"] = f"{rubric_grade}"
+                    grade_text += f"_{rubric_grade}"
+                    if rubric_comment is not None:
+                        params[f"rubric_assessment[{rubric_id}][comments]"] = f"{rubric_comment}"
+                    comment_text += f"_\"{rubric_comment}\""
+            elif grade is not None and TextUtil.is_type(grade, float, f"Grade is not a valid float: {grade}, for student_id: {student_id} - skipped"):
+                params["submission[posted_grade]"] = str(grade)
+                grade_text = str(grade)
+            if len(params) > 0 and conf.ask(f"Applying grade for {student_name}({student_email}) to {grade_text} and putting comment:\n{comment_text}", no_all=False):
                 PUT_url(USER_SUBMISSION_URL.to_url(course_id=course_id, assignment_id=assignment_id,
                                                    user_id=student_id), params=params)
 
