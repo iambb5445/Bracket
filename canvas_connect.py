@@ -323,7 +323,7 @@ class DownloadSubmissions(Command):
             attachments = attempt["attachments"]
             for i, attachment in enumerate(attachments):
                 url = attachment["url"]
-                attachment_filename = get_safe_filename(f"{sortable_name}_{i}")
+                attachment_filename = get_safe_filename(f"{sortable_name}_{i}_{student['user']['id']}") # id included since students can have the same name
                 attempt_info[f"attachment[{i}]"] = attachment_filename
                 downloads.append({"filename": attachment_filename, "url": url})
         else:
