@@ -141,8 +141,8 @@ class Confirm:
         NALL = "nall"
     def __init__(self):
         self.auto_response: bool|None = None
-    def ask(self, message: str, display_options:bool=True, no_all:bool=True):
-        valid_options = [Confirm.Response.Y, Confirm.Response.N] if no_all else [e.value for e in Confirm.Response]
+    def ask(self, message: str, display_options:bool=True, exclude_all_options:bool=True):
+        valid_options = [Confirm.Response.Y, Confirm.Response.N] if exclude_all_options else [e.value for e in Confirm.Response]
         if self.auto_response is not None:
             return self.auto_response
         if display_options:

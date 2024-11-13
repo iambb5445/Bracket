@@ -433,6 +433,8 @@ class GradeSubmissions(Command):
     @staticmethod
     def execute(args: argparse.Namespace):
         conf = Confirm()
+        missing_rubric_conf = Confirm()
+        no_grade_conf = Confirm()
         df = pd.read_csv(args.grade_filename)
         course_id = PandasUtil.get_if_all_same(df, "course_id")
         assignment_id = PandasUtil.get_if_all_same(df, "assignment_id")
@@ -460,6 +462,7 @@ class GradeSubmissions(Command):
             if len(rubric_grade_col_names) > 0:
                 grade_text = "rubric"
                 comment_text += "_rubric"
+                valid_rubric_count = 0
                 for rubric in (assignment_info["rubric"] or []):
                     rubric_id = rubric["id"]
                     grade_col_name = rubric_grade_col_names[rubric_id]
@@ -467,15 +470,25 @@ class GradeSubmissions(Command):
                     rubric_grade = PandasUtil.get(row, grade_col_name)
                     rubric_comment = PandasUtil.get(row, comment_col_name)
                     if rubric_grade is not None and TextUtil.is_type(rubric_grade, float, f"Rubric grade for {grade_col_name} is not a valid float: {rubric_grade}, for student_id: {student_id} - skipped"):
+                        valid_rubric_count += 1
                         params[f"rubric_assessment[{rubric_id}][points]"] = f"{rubric_grade}"
                     grade_text += f"_{rubric_grade}"
                     if rubric_comment is not None:
                         params[f"rubric_assessment[{rubric_id}][comments]"] = f"{rubric_comment}"
                     comment_text += f"_\"{rubric_comment}\""
+                if valid_rubric_count == 0:
+                    if not no_grade_conf.ask(f"No rubric grade found for student {student_name}({student_email}). Enter other fields (e.g. comments) anyway?", exclude_all_options=False):
+                        continue
+                elif valid_rubric_count != len(assignment_info["rubric"] or []):
+                    if not missing_rubric_conf.ask(f"Some but not all of the rubric grades for student {student_name}({student_email}) is missing: {grade_text}. Enter the rest of the rubric, comments, etc. anyway?", exclude_all_options=False):
+                        continue
             elif grade is not None and TextUtil.is_type(grade, float, f"Grade is not a valid float: {grade}, for student_id: {student_id} - skipped"):
                 params["submission[posted_grade]"] = str(grade)
                 grade_text = str(grade)
-            if len(params) > 0 and conf.ask(f"Applying grade for {student_name}({student_email}) to {grade_text} and putting comment:\n{comment_text}", no_all=False):
+            else:
+                if not no_grade_conf.ask(f"No grade found for student {student_name}({student_email}). Enter other fields (e.g. comments) anyway?", exclude_all_options=False):
+                    continue
+            if len(params) > 0 and conf.ask(f"Applying grade for {student_name}({student_email}) to {grade_text} and putting comment:\n{comment_text}", exclude_all_options=False):
                 PUT_url(USER_SUBMISSION_URL.to_url(course_id=course_id, assignment_id=assignment_id,
                                                    user_id=student_id), params=params)
 
