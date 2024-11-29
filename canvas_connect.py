@@ -313,7 +313,7 @@ class DownloadSubmissions(Command):
         sortable_name = DownloadSubmissions._get_sortable_name(student)
         attempt_info: dict[str, str] = {}
         if submission_type is None: # for some reason, no submission is considered a history for submission
-            return {"Empty": True}, [] # kept for comments
+            return {"empty": True}, [] # kept for comments
         if submission_type == "online_url":
             attempt_info = {"submission": attempt["url"]}
         elif submission_type == "online_quiz":
@@ -431,6 +431,50 @@ class GradeSubmissions(Command):
     def get_parse_info() -> dict:
         return {"name": "grade_submissions", "help": "Upload submission grades for a given assignment"}
     @staticmethod
+    def _get_latest_attempt_count(course_id, assignment_id) -> dict:
+        submissions = fetch_list(SUBMISSIONS_URL.to_url(course_id=course_id, assignment_id=assignment_id), MAX_FETCH)
+        return dict([(int(submission["id"]), submission["attempt"]) for submission in submissions
+                     if submission.get("id", None) is not None and TextUtil.is_type(submission["id"], int)])
+    @staticmethod
+    # Checks four possible failure cases:
+    # 1. the grade that's being entered doesn't have an attempt count or the attempt count is not a number (impossible - probably the csv file was altered)
+    # 2. the grade that's being entered points to a submission id that is invalid or doesn't exist in the latest submissions (impossible - probably the csv file was altered)
+    # 3. the grade that's being entered points to a submission attempt that hasn't been made yet (impossible - probably the csv file was altered)
+    # 4. the grade that's being entered points to a submisison attempt that is old - a newer submission exists for this assignment
+    # None of these cases stop the process. Each will ask for a seperate type of confirmation if the Conf object is provided for that type.
+    def _should_skip_for_inconsistency(this_attempt, latest_attempt_counts,
+            invalid_attempt_count_conf: Confirm|None, missing_id_conf: Confirm|None,
+            future_attempt_conf: Confirm|None, old_attempt_conf: Confirm|None) -> bool:
+        submission_id, is_empty, attempt_count = PandasUtil.multi_get(this_attempt,
+            "submission_id", "empty", "attempt_number")
+        if attempt_count is None or not TextUtil.is_type(attempt_count, int):
+            TextUtil.warn(f"The submission_id {submission_id} does not have a valid attempt count: {attempt_count}")
+            if invalid_attempt_count_conf is None:
+                return True
+            return not invalid_attempt_count_conf.ask(f"Should we continue with uploading this grade?", exclude_all_options=False)
+        attempt_count = int(attempt_count)
+        if is_empty:
+            attempt_count = 0
+        if submission_id is None or not TextUtil.is_type(submission_id, int) or int(submission_id) not in latest_attempt_counts:
+            TextUtil.warn(f"The submission_id {submission_id} is invaid or does not exist in the list of latest submissions for this assignmnet.")
+            if missing_id_conf is None:
+                return True
+            return not missing_id_conf.ask(f"Should we continue with uploading this grade?", exclude_all_options=False)
+        submission_id = int(submission_id)
+        latest_attempt_count = latest_attempt_counts[submission_id]
+        latest_attempt_count = 0 if latest_attempt_count is None else latest_attempt_count
+        if latest_attempt_count < attempt_count:
+            TextUtil.warn(f"The grade for submission {submission_id} is pointing to an attempt number that hasn't yet been made. (impossible)\nGraded attempt count: {attempt_count}{' (empty attempt)' if attempt_count == 0 else ''}\nLatest attempt count: {latest_attempt_count}")
+            if future_attempt_conf is None:
+                return True
+            return not future_attempt_conf.ask(f"Should we continue with uploading this grade?", exclude_all_options=False)
+        if latest_attempt_count > attempt_count:
+            TextUtil.warn(f"The grade for submission {submission_id} is pointing to an old attempt. At least one newer attempt has already been made.\nGraded attempt count: {attempt_count}{' (empty attempt)' if attempt_count == 0 else ''}\nLatest attempt count: {latest_attempt_count}")
+            if old_attempt_conf is None:
+                return True
+            return not old_attempt_conf.ask(f"Should we continue with uploading this grade?", exclude_all_options=False)
+        return False
+    @staticmethod
     def execute(args: argparse.Namespace):
         conf = Confirm()
         missing_rubric_conf = Confirm()
@@ -439,6 +483,9 @@ class GradeSubmissions(Command):
         course_id = PandasUtil.get_if_all_same(df, "course_id")
         assignment_id = PandasUtil.get_if_all_same(df, "assignment_id")
         assignment_info = get_assignment_info(course_id, assignment_id, True)
+        latest_attempt_counts = GradeSubmissions._get_latest_attempt_count(course_id, assignment_id)
+        inconsistency_check_confs: list[Confirm] = [Confirm(), Confirm(), Confirm(), Confirm()]
+        changed_grades = []
         rubric_grade_col_names = {}
         rubric_comment_col_names = {}
         if assignment_info.get("use_rubric_for_grading", False):
@@ -488,9 +535,18 @@ class GradeSubmissions(Command):
             else:
                 if not no_grade_conf.ask(f"No grade found for student {student_name}({student_email}). Enter other fields (e.g. comments) anyway?", exclude_all_options=False):
                     continue
-            if len(params) > 0 and conf.ask(f"Applying grade for {student_name}({student_email}) to {grade_text} and putting comment:\n{comment_text}", exclude_all_options=False):
+            if len(params) > 0 and \
+                conf.ask(f"Applying grade for {student_name}({student_email}) to {grade_text} and putting comment:\n{comment_text}", exclude_all_options=False) and \
+                not GradeSubmissions._should_skip_for_inconsistency(row, latest_attempt_counts, *inconsistency_check_confs):
                 PUT_url(USER_SUBMISSION_URL.to_url(course_id=course_id, assignment_id=assignment_id,
                                                    user_id=student_id), params=params)
+                changed_grades.append(row)
+        # late warning in case the grades are already in but something has changed
+        latest_attempt_counts = GradeSubmissions._get_latest_attempt_count(course_id, assignment_id)
+        for row in changed_grades:
+            if GradeSubmissions._should_skip_for_inconsistency(row, latest_attempt_counts, None, None, None, None):
+                TextUtil.warn("Late warning - the grade is already in, but while the request was being sent to canvas, a new submission was made.")
+        
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(description="Main Command Line Interface")

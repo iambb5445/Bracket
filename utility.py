@@ -59,7 +59,7 @@ class TextUtil:
         print(TextUtil.get_colored_text(f"[WARNING]{warning_message}", TextUtil.TEXT_COLOR.Red))
 
     @staticmethod
-    def is_type(s: str, type_convert, warning:str|None=None) -> bool:
+    def is_type(s, type_convert, warning:str|None=None) -> bool:
         try:
             type_convert(s)
         except ValueError:
