@@ -386,7 +386,7 @@ class DownloadSubmissions(Command):
                                     [(f'rubric[{i}]:{rubric["id"]}c', DownloadSubmissions._summarize_rubric(rubric)) for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
                                     [(f'new_rubric[{i}]:g', f'{rubric["points"]}') for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
                                     [(f'new_rubric[{i}]:c', DownloadSubmissions._summarize_rubric(rubric)) for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
-                                    [(question["question_name"],question["question_text"]) for question in questions]
+                                    [(f"{question['id']}\n{question['question_name']}",question["question_text"]) for question in questions]
                                 ))
         for submission in submissions:
             student = next((s for s in students if s["user"]["id"] == submission["user_id"]), None)
