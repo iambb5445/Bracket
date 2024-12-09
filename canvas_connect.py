@@ -318,7 +318,7 @@ class DownloadSubmissions(Command):
             attempt_info = {"submission": attempt["url"]}
         elif submission_type == "online_quiz":
             for i, question in enumerate(questions):
-                attempt_info[question["question_name"]] = attempt["submission_data"][i]["text"]
+                attempt_info[DownloadSubmissions._get_question_key(question)] = attempt["submission_data"][i]["text"]
         elif submission_type == "online_upload":
             attachments = attempt["attachments"]
             for i, attachment in enumerate(attachments):
@@ -363,6 +363,9 @@ class DownloadSubmissions(Command):
                (f'long desc: {rubric["long_description"]}\n' if len(rubric["long_description"]) > 0 else '') +\
                ratings_summary
     @staticmethod
+    def _get_question_key(question):
+        return f"{question['id']}\n{question['question_name']}"
+    @staticmethod
     def execute(args: argparse.Namespace):
         course_info = get_course_info(args.course_id, True)
         assignment_info = get_assignment_info(args.course_id, args.assignment_id, True)
@@ -386,7 +389,7 @@ class DownloadSubmissions(Command):
                                     [(f'rubric[{i}]:{rubric["id"]}c', DownloadSubmissions._summarize_rubric(rubric)) for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
                                     [(f'new_rubric[{i}]:g', f'{rubric["points"]}') for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
                                     [(f'new_rubric[{i}]:c', DownloadSubmissions._summarize_rubric(rubric)) for i, rubric in enumerate(assignment_info.get("rubric", None) or [])] +
-                                    [(f"{question['id']}\n{question['question_name']}",question["question_text"]) for question in questions]
+                                    [(DownloadSubmissions._get_question_key(question),question["question_text"]) for question in questions]
                                 ))
         for submission in submissions:
             student = next((s for s in students if s["user"]["id"] == submission["user_id"]), None)
